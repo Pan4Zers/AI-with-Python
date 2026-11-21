@@ -7,11 +7,14 @@ from maze_generator import generate_all_mazes
 from collections import deque
 from maze_validator import validate_maze
 import os
+from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
+
 def get_neighbours(graph, node):
     r, c = node
     rows, cols = graph.shape
     neighbours = []
-    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1),(1,1),(-1,1),(-1,-1),(1,-1)]:
         nr, nc = r+dr, c+dc
         if 0 <= nr < rows and 0 <= nc < cols:
             neighbours.append((nr,nc))
@@ -19,6 +22,14 @@ def get_neighbours(graph, node):
     neighbours = [i for i in neighbours if graph[i] == 0]
 
     return neighbours
+
+def movement_cost(a, b): # local calculations
+    dr = abs(a[0] - b[0])
+    dc = abs(a[1] - b[1])
+
+    if dr == 1 and dc == 1:
+        return np.sqrt(2)
+    return 1
 
 def backtrack(came_from, start, end):
     if end not in came_from:
@@ -105,6 +116,10 @@ def manhattan(a, b):
     """Heuristic function for grid movement (4 directions)."""
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
+def octile(a,b):
+    """Heuristic function for grid movement (8 directions)."""
+    return max(abs(a[0]-b[0]), abs(a[1] - b[1])) + (np.sqrt(2)-1)*min(abs(a[0]-b[0]), abs(a[1] - b[1]))
+
 def dijkstra(grid, start, end, weights=None):
     # weights can be a 2D array of step costs; defaults to 1 per step if None
     pq = [(0, start)]
@@ -122,7 +137,9 @@ def dijkstra(grid, start, end, weights=None):
             return backtrack(came_from, start, end), nodes_explored
 
         for nxt in get_neighbours(grid, curr):
-            step_cost = weights[nxt] if weights is not None else 1
+            step_cost = movement_cost(curr, nxt)
+            if weights is not None:
+                step_cost *= weights[nxt]
             new_cost = curr_cost + step_cost
             if new_cost < cost_so_far.get(nxt, float("inf")):
                 cost_so_far[nxt] = new_cost
@@ -132,7 +149,7 @@ def dijkstra(grid, start, end, weights=None):
     return [], nodes_explored
 
 def astar(grid, start, end, weights=None):
-    pq = [(manhattan(start, end), 0, start)]
+    pq = [(octile(start, end), 0, start)]
     came_from = {start: None}
     cost_so_far = {start: 0}
     nodes_explored = 0
@@ -147,40 +164,52 @@ def astar(grid, start, end, weights=None):
             return backtrack(came_from, start, end), nodes_explored
 
         for nxt in get_neighbours(grid, curr):
-            step_cost = weights[nxt] if weights is not None else 1
+            step_cost = movement_cost(curr, nxt)
+            if weights is not None:
+                step_cost *= weights[nxt]
             new_cost = curr_cost + step_cost
             if new_cost < cost_so_far.get(nxt, float("inf")):
                 cost_so_far[nxt] = new_cost
                 came_from[nxt] = curr
-                priority = new_cost + manhattan(nxt, end)
+                priority = new_cost + octile(nxt, end)
                 heapq.heappush(pq, (priority, new_cost, nxt))
 
     return [], nodes_explored
 
 def floodfill(grid, start, end):
     distances = {end: 0}
-    queue = deque([end])
+    pq = [(0, end)]
     nodes_explored = 0
 
-    while queue:
-        curr = queue.popleft()
+    # Stage 1: Calculate minimum geometric distances from the end.
+    while pq:
+        curr_dist, curr = heapq.heappop(pq)
+
+        if curr_dist > distances.get(curr, float("inf")):
+            continue
+
         nodes_explored += 1
-        if curr == start:
-            break  # Stop flooding once the wave reaches start
 
         for nxt in get_neighbours(grid, curr):
-            if nxt not in distances:
-                distances[nxt] = distances[curr] + 1
-                queue.append(nxt)
+            new_dist = curr_dist + movement_cost(curr, nxt)
+
+            if new_dist < distances.get(nxt, float("inf")):
+                distances[nxt] = new_dist
+                heapq.heappush(pq, (new_dist, nxt))
 
     if start not in distances:
         return [], nodes_explored
 
+    # Stage 2: Reconstruct the minimum-cost path.
     path = [start]
     curr = start
+
     while curr != end:
         for nxt in get_neighbours(grid, curr):
-            if distances.get(nxt) == distances[curr] - 1:
+            if np.isclose(
+                distances.get(nxt, float("inf")) + movement_cost(curr, nxt),
+                distances[curr]
+            ):
                 path.append(nxt)
                 curr = nxt
                 break
@@ -191,8 +220,8 @@ def bidirectional_astar(grid, start, end):
     if start == end:
         return [start], 1
 
-    f_pq = [(manhattan(start, end), 0, start)]
-    b_pq = [(manhattan(end, start), 0, end)]
+    f_pq = [(octile(start, end), 0, start)]
+    b_pq = [(octile(end, start), 0, end)]
 
     f_came_from = {start: None}
     b_came_from = {end: None}
@@ -215,11 +244,11 @@ def bidirectional_astar(grid, start, end):
             nodes_explored += 1
 
             for nxt in get_neighbours(grid, curr):
-                new_g = g + 1
+                new_g = g + movement_cost(curr, nxt)
                 if new_g < f_cost.get(nxt, float("inf")):
                     f_cost[nxt] = new_g
                     f_came_from[nxt] = curr
-                    heapq.heappush(f_pq, (new_g + manhattan(nxt, end), new_g, nxt))
+                    heapq.heappush(f_pq, (new_g + octile(nxt, end), new_g, nxt))
 
                     if nxt in b_cost and new_g + b_cost[nxt] < best_total_cost:
                         best_total_cost = new_g + b_cost[nxt]
@@ -231,11 +260,11 @@ def bidirectional_astar(grid, start, end):
             nodes_explored += 1
 
             for nxt in get_neighbours(grid, curr):
-                new_g = g + 1
+                new_g = g + movement_cost(curr, nxt)
                 if new_g < b_cost.get(nxt, float("inf")):
                     b_cost[nxt] = new_g
                     b_came_from[nxt] = curr
-                    heapq.heappush(b_pq, (new_g + manhattan(nxt, start), new_g, nxt))
+                    heapq.heappush(b_pq, (new_g + octile(nxt, start), new_g, nxt))
 
                     if nxt in f_cost and new_g + f_cost[nxt] < best_total_cost:
                         best_total_cost = new_g + f_cost[nxt]
@@ -253,6 +282,11 @@ def bidirectional_astar(grid, start, end):
 
     return forward_path + backward_path, nodes_explored
 
+def calculate_path_cost(path):
+    return sum(
+        movement_cost(path[i], path[i+1])
+        for i in range(len(path)-1)
+    )
 
 ALGOS = {
     "BFS": bfs,
@@ -282,7 +316,8 @@ def plot_comparisons(results):
         ("nodes", "Average Nodes Explored"),
         ("length", "Average Path Length"),
         ("peak_kb", "Average Peak Memory (KB)"),
-        ("optimality", "Average Optimality Ratio")
+        ("optimality", "Average Optimality Ratio"),
+        ("path_cost", "Average Geometric Path Cost")
     ]
 
     for metric, title in metrics:
@@ -326,10 +361,142 @@ def plot_maze(grid, path, start, end):
     plt.tight_layout()
     plt.show()
 
+def plot_combined_paths(grid, paths, start, end, maze_index, output_dir):
 
-def run_tests(iter=1000, size=15, memory_sample=50):
+    plt.figure(figsize=(9, 9))
+    plt.imshow(grid, cmap="binary", interpolation="nearest")
 
-    mazes = generate_all_mazes(size=size, iters=iter//9)
+    # Assign a distinct colour to each algorithm.
+    cmap = plt.get_cmap("tab10")
+
+    algo_colors = {
+        name: cmap(i % 10)
+        for i, name in enumerate(paths)
+    }
+
+    # Map every traversed edge to the algorithms using it.
+    edge_owners = {}
+
+    for name, path in paths.items():
+
+        for a, b in zip(path[:-1], path[1:]):
+
+            edge = tuple(sorted((tuple(a), tuple(b))))
+
+            if edge not in edge_owners:
+                edge_owners[edge] = set()
+
+            edge_owners[edge].add(name)
+
+    # Separate individual and shared edges.
+    segments = []
+    colors = []
+
+    for edge, owners in edge_owners.items():
+
+        a, b = edge
+
+        segments.append([
+            (a[1], a[0]),
+            (b[1], b[0])
+        ])
+
+        if len(owners) > 1:
+            colors.append("black")
+        else:
+            name = next(iter(owners))
+            colors.append(algo_colors[name])
+
+    # Draw all path segments.
+    collection = LineCollection(
+        segments,
+        colors=colors,
+        linewidths=2.5,
+        zorder=3
+    )
+
+    plt.gca().add_collection(collection)
+
+    # Mark start and end.
+    plt.scatter(
+        start[1], start[0],
+        marker="o",
+        color="lime",
+        edgecolors="black",
+        s=100,
+        zorder=4,
+        label="Start"
+    )
+
+    plt.scatter(
+        end[1], end[0],
+        marker="*",
+        color="red",
+        edgecolors="black",
+        s=180,
+        zorder=4,
+        label="End"
+    )
+
+    # Construct the legend.
+    legend_handles = [
+        Line2D(
+            [0], [0],
+            color=algo_colors[name],
+            linewidth=2.5,
+            label=name
+        )
+        for name in paths
+    ]
+
+    if any(len(owners) > 1 for owners in edge_owners.values()):
+        legend_handles.append(
+            Line2D(
+                [0], [0],
+                color="black",
+                linewidth=2.5,
+                label="Shared Path"
+            )
+        )
+
+    legend_handles.extend([
+        Line2D(
+            [0], [0],
+            marker="o",
+            color="lime",
+            markeredgecolor="black",
+            linestyle="None",
+            label="Start"
+        ),
+        Line2D(
+            [0], [0],
+            marker="*",
+            color="red",
+            markeredgecolor="black",
+            linestyle="None",
+            label="End"
+        )
+    ])
+
+    plt.legend(handles=legend_handles)
+    plt.title(f"Maze {maze_index}: Algorithm Path Comparison")
+    plt.tight_layout()
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    plt.savefig(
+        os.path.join(output_dir, f"maze_{maze_index}.png"),
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    plt.close()
+
+
+
+def run_tests(iter=1000, size=15, memory_sample=1000):
+    seed = np.random.randint(0, 2**32)
+    mazes = generate_all_mazes(size=size, iters=iter//9, seed=seed)
 
     results = {
         name: {
@@ -338,7 +505,8 @@ def run_tests(iter=1000, size=15, memory_sample=50):
             "length": [],
             "peak_kb": [],
             "success": [],
-            "optimality": []
+            "optimality": [],
+            "path_cost": []
         }
         for name in ALGOS
     }
@@ -370,6 +538,7 @@ def run_tests(iter=1000, size=15, memory_sample=50):
     print("-" * 50)
 
     for metric, values in validation_results.items():
+
         mean, median, std = safe_stats(values)
 
         print(
@@ -379,8 +548,9 @@ def run_tests(iter=1000, size=15, memory_sample=50):
             f"Std: {std:.3f}"
         )
 
-    print(f"\nTotal mazes generated: {len(mazes)}")
+    print(f"\nGenerated mazes: {len(mazes)}")
     print(f"Connected mazes: {len(valid_mazes)}")
+    print(f"Rejected mazes: {len(mazes) - len(valid_mazes)}")
 
     # -----------------------------
     # 2. ALGORITHM BENCHMARKING
@@ -390,6 +560,9 @@ def run_tests(iter=1000, size=15, memory_sample=50):
     sample_start = None
     sample_end = None
     sample_path = []
+
+    # Store paths for all connected mazes.
+    maze_path_records = []
 
     for index, (name_maze, grid, start, end) in enumerate(valid_mazes):
 
@@ -411,23 +584,25 @@ def run_tests(iter=1000, size=15, memory_sample=50):
             results[name]["nodes"].append(nodes)
             results[name]["length"].append(len(path) if success else 0)
             results[name]["success"].append(success)
+            results[name]["path_cost"].append(calculate_path_cost(path))
 
             maze_runs[name] = path
 
             print("done")
 
+        maze_path_records.append(maze_runs.copy())
+
         # BFS provides the shortest-path reference.
-        bfs_length = len(maze_runs["BFS"])
+        dijkstra_cost = results["DIJKSTRA"]["path_cost"][-1]
 
         for name in ALGOS:
 
             path = maze_runs[name]
 
-            if path and bfs_length:
-                ratio = len(path) / bfs_length
+            if path and dijkstra_cost:
+                ratio = results[name]["path_cost"][-1] / dijkstra_cost
                 results[name]["optimality"].append(ratio)
 
-        # Keep one maze for visualisation.
         if sample_grid is None:
             sample_grid = grid
             sample_start = start
@@ -463,7 +638,7 @@ def run_tests(iter=1000, size=15, memory_sample=50):
     # -----------------------------
 
     print("\n\nALGORITHM PERFORMANCE")
-    print("=" * 115)
+    print("=" * 130)
 
     header = (
         f"{'Algorithm':<12} | "
@@ -474,21 +649,29 @@ def run_tests(iter=1000, size=15, memory_sample=50):
         f"{'Path Mean':>10} | "
         f"{'Memory KB':>10} | "
         f"{'Success %':>10} | "
-        f"{'Optimality':>10}"
+        f"{'Optimality':>10} | "
+        f"{'Path Cost':>10}"
     )
 
     print(header)
-    print("-" * 115)
+    print("-" * 130)
 
     for name, data in results.items():
 
         time_mean, time_median, time_std = safe_stats(data["time_ms"])
         nodes_mean, _, _ = safe_stats(data["nodes"])
+
         path_mean, _, _ = safe_stats(
             [x for x in data["length"] if x > 0]
         )
+
         memory_mean, _, _ = safe_stats(data["peak_kb"])
+
         optimality_mean, _, _ = safe_stats(data["optimality"])
+
+        path_cost_mean, _, _ = safe_stats(
+            [x for x in data["path_cost"] if x > 0]
+        )
 
         success_rate = (
             100 * np.mean(data["success"])
@@ -505,217 +688,325 @@ def run_tests(iter=1000, size=15, memory_sample=50):
             f"{path_mean:>10.1f} | "
             f"{memory_mean:>10.2f} | "
             f"{success_rate:>9.2f}% | "
-            f"{optimality_mean:>10.3f}"
+            f"{optimality_mean:>10.3f} | "
+            f"{path_cost_mean:>10.3f}"
         )
 
     # -----------------------------
     # 5. ANALYTICAL VISUALISATION
     # -----------------------------
+
     plot_dir = "maze_analysis_plots"
     os.makedirs(plot_dir, exist_ok=True)
 
-    num_bins = 8
-
-    maze_parameters = {
-        "Wall Density": "wall_density",
-        "Dead Ends": "dead_ends",
-        "Junctions": "junctions"
-    }
+    algorithms = list(results.keys())
 
     performance_metrics = {
         "Execution Time (ms)": "time_ms",
         "Nodes Explored": "nodes",
         "Path Length": "length",
         "Memory Usage (KB)": "peak_kb",
-        "Optimality Ratio": "optimality"
+        "Optimality Ratio": "optimality",
+        "Path Cost": "path_cost"
     }
 
-    # Only connected mazes are benchmarked.
-    connected_mask = np.asarray(
-        validation_results["connected"],
-        dtype=bool
+    # Dijkstra provides the reference cost for optimality.
+    dijkstra_costs = np.asarray(
+        results["DIJKSTRA"]["path_cost"],
+        dtype=float
     )
 
-    # These values correspond to the benchmarked mazes.
-    bfs_lengths = np.asarray(results["BFS"]["length"], dtype=float)
+    # -----------------------------
+    # 5.1 PREPARE PERFORMANCE DATA
+    # -----------------------------
 
-    def calculate_binned_stats(x, y, bins=8):
-        """
-        Divide x into equal-width intervals and calculate
-        mean x, mean y, standard deviation of y, and sample count.
-        """
+    performance_data = {}
 
-        valid = np.isfinite(x) & np.isfinite(y)
-        x = x[valid]
-        y = y[valid]
-
-        if len(x) == 0:
-            return [], [], [], []
-
-        # Handle the case where every x value is identical.
-        if np.min(x) == np.max(x):
-            return (
-                [np.mean(x)],
-                [np.mean(y)],
-                [np.std(y)],
-                [len(y)]
-            )
-
-        edges = np.linspace(
-            np.min(x),
-            np.max(x),
-            bins + 1
-        )
-
-        bin_indices = np.digitize(x, edges[1:-1])
-
-        bin_x = []
-        bin_means = []
-        bin_stds = []
-        bin_counts = []
-
-        for i in range(bins):
-
-            values = y[bin_indices == i]
-            x_values = x[bin_indices == i]
-
-            if len(values) == 0:
-                continue
-
-            bin_x.append(np.mean(x_values))
-            bin_means.append(np.mean(values))
-            bin_stds.append(np.std(values))
-            bin_counts.append(len(values))
-
-        return bin_x, bin_means, bin_stds, bin_counts
-
-    # Generate plots separately for every algorithm.
     for algo_name, data in results.items():
 
-        algo_dir = os.path.join(plot_dir, algo_name)
+        performance_data[algo_name] = {}
+
+        for metric_name, metric_key in performance_metrics.items():
+
+            if metric_key == "optimality":
+
+                costs = np.asarray(
+                    data["path_cost"],
+                    dtype=float
+                )
+
+                values = np.divide(
+                    costs,
+                    dijkstra_costs,
+                    out=np.full(len(costs), np.nan),
+                    where=(dijkstra_costs > 0)
+                )
+
+                values[costs == 0] = np.nan
+
+            elif metric_key == "peak_kb":
+
+                values = np.asarray(
+                    data["peak_kb"],
+                    dtype=float
+                )
+
+            else:
+
+                values = np.asarray(
+                    data[metric_key],
+                    dtype=float
+                )
+
+                if metric_key in ("length", "path_cost"):
+
+                    success = np.asarray(
+                        data["success"],
+                        dtype=bool
+                    )
+
+                    values = np.where(
+                        success,
+                        values,
+                        np.nan
+                    )
+
+            performance_data[algo_name][metric_key] = values
+
+    # -----------------------------
+    # 5.2 INDIVIDUAL DISTRIBUTION PLOTS
+    # -----------------------------
+
+    for algo_name in algorithms:
+
+        algo_dir = os.path.join(
+            plot_dir,
+            algo_name
+        )
+
         os.makedirs(algo_dir, exist_ok=True)
 
-        for parameter_name, parameter_key in maze_parameters.items():
+        for metric_name, metric_key in performance_metrics.items():
 
-            x_all = np.asarray(
-                validation_results[parameter_key],
-                dtype=float
+            values = performance_data[algo_name][metric_key]
+
+            maze_numbers = np.arange(1, len(values) + 1)
+
+            plt.figure(figsize=(12, 6))
+
+            plt.plot(
+                maze_numbers,
+                values,
+                linewidth=1.2
             )
 
-            x = x_all[connected_mask]
+            plt.xlabel("Maze Number")
+            plt.ylabel(metric_name)
 
-            for metric_name, metric_key in performance_metrics.items():
+            plt.title(
+                f"{algo_name}: {metric_name} Across Mazes"
+            )
 
-                # Obtain the corresponding performance measurements.
-                if metric_key == "optimality":
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
 
-                    lengths = np.asarray(
-                        data["length"],
-                        dtype=float
-                    )
+            filename = f"{metric_key}_distribution.png"
 
-                    y = np.divide(
-                        lengths,
-                        bfs_lengths,
-                        out=np.full(len(lengths), np.nan),
-                        where=(bfs_lengths > 0)
-                    )
+            plt.savefig(
+                os.path.join(algo_dir, filename),
+                dpi=300,
+                bbox_inches="tight"
+            )
 
-                    y[lengths == 0] = np.nan
-                    x_values = x
+            plt.close()
 
-                elif metric_key == "peak_kb":
+    # -----------------------------
+    # 5.3 AGGREGATE PERFORMANCE PLOTS
+    # -----------------------------
 
-                    y = np.asarray(
-                        data["peak_kb"],
-                        dtype=float
-                    )
+    aggregate_dir = os.path.join(
+        plot_dir,
+        "aggregates"
+    )
 
-                    # Memory was measured only for the first
-                    # memory_sample connected mazes.
-                    x_values = x[:len(y)]
+    os.makedirs(aggregate_dir, exist_ok=True)
 
-                else:
+    for metric_name, metric_key in performance_metrics.items():
 
-                    y = np.asarray(
-                        data[metric_key],
-                        dtype=float
-                    )
+        means = []
 
-                    x_values = x
+        for algo_name in algorithms:
 
-                    # Exclude failed paths from path-length analysis.
-                    if metric_key == "length":
+            values = performance_data[algo_name][metric_key]
 
-                        success = np.asarray(data["success"])
-                        y = np.where(success, y, np.nan)
+            valid_values = values[np.isfinite(values)]
 
-                # Calculate averages within each bin.
-                bin_x, bin_means, bin_stds, bin_counts = (
-                    calculate_binned_stats(
-                        x_values,
-                        y,
-                        bins=num_bins
-                    )
+            mean = (
+                np.mean(valid_values)
+                if len(valid_values) > 0
+                else np.nan
+            )
+
+            means.append(mean)
+
+        plt.figure(figsize=(10, 6))
+
+        bars = plt.bar(
+            algorithms,
+            means
+        )
+
+        plt.ylabel(f"Mean {metric_name}")
+
+        plt.title(
+            f"Average {metric_name} Across All Tested Mazes"
+        )
+
+        plt.xticks(rotation=30, ha="right")
+
+        for bar, mean in zip(bars, means):
+
+            if np.isfinite(mean):
+
+                plt.annotate(
+                    f"{mean:.3f}",
+                    (
+                        bar.get_x() + bar.get_width() / 2,
+                        bar.get_height()
+                    ),
+                    xytext=(0, 4),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=8
                 )
 
-                if len(bin_x) == 0:
-                    continue
+        plt.grid(
+            axis="y",
+            alpha=0.3
+        )
 
-                # Plot the binned averages with standard deviation.
-                plt.figure(figsize=(9, 6))
+        plt.tight_layout()
 
-                plt.errorbar(
-                    bin_x,
-                    bin_means,
-                    yerr=bin_stds,
-                    fmt="o-",
-                    capsize=4,
-                    markersize=5
+        filename = f"{metric_key}_aggregate.png"
+
+        plt.savefig(
+            os.path.join(aggregate_dir, filename),
+            dpi=300,
+            bbox_inches="tight"
+        )
+
+        plt.close()
+
+    print(f"\nAll analytical plots saved in: {plot_dir}/")
+
+    # -----------------------------
+    # 6. OUTLIER MAZE SELECTION
+    # -----------------------------
+
+    visual_dir = "maze_solution_overlays"
+
+    lower_outliers = []
+    upper_outliers = []
+
+    for algo_name in algorithms:
+
+        for metric_name, metric_key in performance_metrics.items():
+
+            values = performance_data[algo_name][metric_key]
+
+            # Ignore NaN and infinite values.
+            valid_indices = np.where(np.isfinite(values))[0]
+            valid_values = values[valid_indices]
+
+            if len(valid_values) < 4:
+                continue
+
+            q1 = np.percentile(valid_values, 25)
+            q3 = np.percentile(valid_values, 75)
+
+            iqr = q3 - q1
+
+            lower_fence = q1 - 1.5 * iqr
+            upper_fence = q3 + 1.5 * iqr
+
+            low_indices = valid_indices[
+                valid_values < lower_fence
+            ]
+
+            high_indices = valid_indices[
+                valid_values > upper_fence
+            ]
+
+            # Select the most extreme lower outlier.
+            if len(low_indices) > 0:
+
+                index = low_indices[
+                    np.argmin(values[low_indices])
+                ]
+
+                lower_outliers.append(
+                    (index, algo_name, metric_key)
                 )
 
-                # Show the number of mazes in each bin.
-                for bx, by, count in zip(
-                    bin_x,
-                    bin_means,
-                    bin_counts
-                ):
-                    plt.annotate(
-                        f"n={count}",
-                        (bx, by),
-                        textcoords="offset points",
-                        xytext=(0, 9),
-                        ha="center",
-                        fontsize=8
-                    )
+            # Select the most extreme upper outlier.
+            if len(high_indices) > 0:
 
-                plt.xlabel(parameter_name)
-                plt.ylabel(metric_name)
+                index = high_indices[
+                    np.argmax(values[high_indices])
+                ]
 
-                plt.title(
-                    f"{algo_name}: {parameter_name} vs {metric_name}"
+                upper_outliers.append(
+                    (index, algo_name, metric_key)
                 )
 
-                plt.grid(True, alpha=0.3)
-                plt.tight_layout()
+    print("\nOUTLIER SELECTION")
+    print("-" * 50)
 
-                filename = f"{parameter_key}_{metric_key}.png"
+    print(f"Lower outlier selections: {len(lower_outliers)}")
+    print(f"Upper outlier selections: {len(upper_outliers)}")
 
-                filepath = os.path.join(
-                    algo_dir,
-                    filename
-                )
+    # -----------------------------
+    # 7. OUTLIER PATH VISUALISATIONS
+    # -----------------------------
 
-                plt.savefig(
-                    filepath,
-                    dpi=300,
-                    bbox_inches="tight"
-                )
+    os.makedirs(visual_dir, exist_ok=True)
 
-                plt.close()
+    def plot_outlier_group(outliers, direction):
 
-        print(f"\nAll analytical plots saved in: {plot_dir}/")
+        for index, algo_name, metric_key in outliers:
 
+            name_maze, grid, start, end = valid_mazes[index]
+
+            paths = maze_path_records[index]
+
+            label = (
+                f"{direction}_{algo_name}_{metric_key}_"
+                f"maze_{index + 1}"
+            )
+
+            plot_combined_paths(
+                grid,
+                paths,
+                start,
+                end,
+                label,
+                visual_dir
+            )
+
+    plot_outlier_group(
+        lower_outliers,
+        "LOWER_OUTLIER"
+    )
+
+    plot_outlier_group(
+        upper_outliers,
+        "UPPER_OUTLIER"
+    )
+
+    print(
+        f"\nOutlier maze visualisations saved in: "
+        f"{visual_dir}/"
+    )
+    print(seed)
     return results, validation_results
-
 run_tests()
