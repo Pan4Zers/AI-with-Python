@@ -6,7 +6,7 @@ import heapq
 from maze_generator import generate_all_mazes
 from collections import deque
 from maze_validator import validate_maze
-
+import os
 def get_neighbours(graph, node):
     r, c = node
     rows, cols = graph.shape
@@ -509,20 +509,213 @@ def run_tests(iter=1000, size=15, memory_sample=50):
         )
 
     # -----------------------------
-    # 5. VISUALISATION
+    # 5. ANALYTICAL VISUALISATION
     # -----------------------------
+    plot_dir = "maze_analysis_plots"
+    os.makedirs(plot_dir, exist_ok=True)
 
-    plot_comparisons(results)
+    num_bins = 8
 
-    if sample_grid is not None:
-        plot_maze(
-            sample_grid,
-            sample_path,
-            sample_start,
-            sample_end
+    maze_parameters = {
+        "Wall Density": "wall_density",
+        "Dead Ends": "dead_ends",
+        "Junctions": "junctions"
+    }
+
+    performance_metrics = {
+        "Execution Time (ms)": "time_ms",
+        "Nodes Explored": "nodes",
+        "Path Length": "length",
+        "Memory Usage (KB)": "peak_kb",
+        "Optimality Ratio": "optimality"
+    }
+
+    # Only connected mazes are benchmarked.
+    connected_mask = np.asarray(
+        validation_results["connected"],
+        dtype=bool
+    )
+
+    # These values correspond to the benchmarked mazes.
+    bfs_lengths = np.asarray(results["BFS"]["length"], dtype=float)
+
+    def calculate_binned_stats(x, y, bins=8):
+        """
+        Divide x into equal-width intervals and calculate
+        mean x, mean y, standard deviation of y, and sample count.
+        """
+
+        valid = np.isfinite(x) & np.isfinite(y)
+        x = x[valid]
+        y = y[valid]
+
+        if len(x) == 0:
+            return [], [], [], []
+
+        # Handle the case where every x value is identical.
+        if np.min(x) == np.max(x):
+            return (
+                [np.mean(x)],
+                [np.mean(y)],
+                [np.std(y)],
+                [len(y)]
+            )
+
+        edges = np.linspace(
+            np.min(x),
+            np.max(x),
+            bins + 1
         )
 
-    return results, validation_results
+        bin_indices = np.digitize(x, edges[1:-1])
 
+        bin_x = []
+        bin_means = []
+        bin_stds = []
+        bin_counts = []
+
+        for i in range(bins):
+
+            values = y[bin_indices == i]
+            x_values = x[bin_indices == i]
+
+            if len(values) == 0:
+                continue
+
+            bin_x.append(np.mean(x_values))
+            bin_means.append(np.mean(values))
+            bin_stds.append(np.std(values))
+            bin_counts.append(len(values))
+
+        return bin_x, bin_means, bin_stds, bin_counts
+
+    # Generate plots separately for every algorithm.
+    for algo_name, data in results.items():
+
+        algo_dir = os.path.join(plot_dir, algo_name)
+        os.makedirs(algo_dir, exist_ok=True)
+
+        for parameter_name, parameter_key in maze_parameters.items():
+
+            x_all = np.asarray(
+                validation_results[parameter_key],
+                dtype=float
+            )
+
+            x = x_all[connected_mask]
+
+            for metric_name, metric_key in performance_metrics.items():
+
+                # Obtain the corresponding performance measurements.
+                if metric_key == "optimality":
+
+                    lengths = np.asarray(
+                        data["length"],
+                        dtype=float
+                    )
+
+                    y = np.divide(
+                        lengths,
+                        bfs_lengths,
+                        out=np.full(len(lengths), np.nan),
+                        where=(bfs_lengths > 0)
+                    )
+
+                    y[lengths == 0] = np.nan
+                    x_values = x
+
+                elif metric_key == "peak_kb":
+
+                    y = np.asarray(
+                        data["peak_kb"],
+                        dtype=float
+                    )
+
+                    # Memory was measured only for the first
+                    # memory_sample connected mazes.
+                    x_values = x[:len(y)]
+
+                else:
+
+                    y = np.asarray(
+                        data[metric_key],
+                        dtype=float
+                    )
+
+                    x_values = x
+
+                    # Exclude failed paths from path-length analysis.
+                    if metric_key == "length":
+
+                        success = np.asarray(data["success"])
+                        y = np.where(success, y, np.nan)
+
+                # Calculate averages within each bin.
+                bin_x, bin_means, bin_stds, bin_counts = (
+                    calculate_binned_stats(
+                        x_values,
+                        y,
+                        bins=num_bins
+                    )
+                )
+
+                if len(bin_x) == 0:
+                    continue
+
+                # Plot the binned averages with standard deviation.
+                plt.figure(figsize=(9, 6))
+
+                plt.errorbar(
+                    bin_x,
+                    bin_means,
+                    yerr=bin_stds,
+                    fmt="o-",
+                    capsize=4,
+                    markersize=5
+                )
+
+                # Show the number of mazes in each bin.
+                for bx, by, count in zip(
+                    bin_x,
+                    bin_means,
+                    bin_counts
+                ):
+                    plt.annotate(
+                        f"n={count}",
+                        (bx, by),
+                        textcoords="offset points",
+                        xytext=(0, 9),
+                        ha="center",
+                        fontsize=8
+                    )
+
+                plt.xlabel(parameter_name)
+                plt.ylabel(metric_name)
+
+                plt.title(
+                    f"{algo_name}: {parameter_name} vs {metric_name}"
+                )
+
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+
+                filename = f"{parameter_key}_{metric_key}.png"
+
+                filepath = os.path.join(
+                    algo_dir,
+                    filename
+                )
+
+                plt.savefig(
+                    filepath,
+                    dpi=300,
+                    bbox_inches="tight"
+                )
+
+                plt.close()
+
+        print(f"\nAll analytical plots saved in: {plot_dir}/")
+
+    return results, validation_results
 
 run_tests()
