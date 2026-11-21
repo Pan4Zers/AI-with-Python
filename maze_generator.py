@@ -7,8 +7,6 @@ from maze_dataset.generation import LatticeMazeGenerators
 warnings.filterwarnings("ignore", category=UserWarning)
 
 SIZE = 30
-random.seed(42)
-np.random.seed(42)
 
 GENERATORS = [
     ("1. DFS (Standard Corridors)", LatticeMazeGenerators.gen_dfs, {}),
@@ -23,7 +21,7 @@ GENERATORS = [
 ]
 
 
-def generate_all_mazes(size=SIZE, iters=100):
+def generate_all_mazes(size=SIZE, iters=100, seed = 42):
     """Generates all maze types and returns a list of (name, grid, start, end)."""
 
     mazes = []
