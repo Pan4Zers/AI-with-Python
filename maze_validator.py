@@ -9,8 +9,13 @@ def get_open_neighbours(grid, node):
         (r - 1, c),
         (r + 1, c),
         (r, c - 1),
-        (r, c + 1)
+        (r, c + 1),
+        (r + 1, c + 1),
+        (r - 1, c - 1),
+        (r + 1, c - 1),
+        (r - 1, c + 1)
     ]
+
 
     return [
         (nr, nc)
