@@ -23,7 +23,8 @@ GENERATORS = [
 
 def generate_all_mazes(size=SIZE, iters=100, seed = 42):
     """Generates all maze types and returns a list of (name, grid, start, end)."""
-
+    np.random.seed(seed)
+    random.seed(seed)
     mazes = []
 
     for iteration in range(iters):
