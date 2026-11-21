@@ -120,6 +120,11 @@ The project uses:
 - NumPy
 - Matplotlib
 - maze-dataset
-To install, run this command.
-`pip install numpy matplotlib maze-dataset`
+
+To install the dependencies, run:
+
+```bash
+pip install numpy matplotlib maze-dataset
+```
+
 Python standard-library modules are also used for timing, memory measurement, priority queues, filesystem operations, and queue-based traversal.
